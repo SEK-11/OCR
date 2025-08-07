@@ -1,4 +1,4 @@
-from pdf2image import convert_from_path
+import fitz  # PyMuPDF
 import easyocr
 import numpy as np
 import google.generativeai as genai

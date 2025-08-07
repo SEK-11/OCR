@@ -3,7 +3,7 @@ import os
 import easyocr
 import numpy as np
 import google.generativeai as genai
-from pdf2image import convert_from_path
+import fitz  # PyMuPDF
 from werkzeug.utils import secure_filename
 import time
 
@@ -19,25 +19,13 @@ extracted_text = ""
 qa_function = None
 
 def extract_text_from_pdf(pdf_path):
-    print("Initializing EasyOCR...")
-    reader = easyocr.Reader(['en'], gpu=False)
-    pages = convert_from_path(pdf_path)
-    
+    print("Extracting text using PyMuPDF...")
+    doc = fitz.open(pdf_path)
     all_text = []
-    for i, img in enumerate(pages):
-        print(f"Processing page {i+1}...")
-        img_array = np.array(img)
-        result = reader.readtext(img_array)
-        
-        page_text = []
-        for item in result:
-            text = item[1].strip()
-            if len(text) > 1:
-                page_text.append(text)
-        
-        if page_text:
-            all_text.extend(page_text)
-    
+    for page_num, page in enumerate(doc):
+        print(f"Processing page {page_num + 1}...")
+        text = page.get_text("text")  # Plain text extraction
+        all_text.append(text)
     return "\n".join(all_text)
 
 def setup_gemini_qa(extracted_text, api_key):
