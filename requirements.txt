@@ -2,7 +2,7 @@ Flask==2.3.3
 easyocr==1.7.0
 google-generativeai==0.3.2
 PyMuPDF==1.21.1
-Pillow==10.0.0
+Pillow==10.4.0
 numpy==1.24.3
 torch==2.0.1
 torchvision==0.15.2
