@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF OCR with Gemini Q&A</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #4f46e5, #7c3aed);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            font-weight: 700;
+        }
+        .header p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+        .content {
+            padding: 40px;
+        }
+        .upload-section, .qa-section {
+            background: white;
+            margin: 30px 0;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            transition: transform 0.3s ease;
+        }
+        .upload-section:hover, .qa-section:hover {
+            transform: translateY(-5px);
+        }
+        .section-title {
+            display: flex;
+            align-items: center;
+            font-size: 1.4rem;
+            font-weight: 600;
+            color: #374151;
+            margin-bottom: 20px;
+        }
+        .section-title i {
+            margin-right: 10px;
+            color: #4f46e5;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            font-weight: 600;
+            color: #374151;
+            margin-bottom: 8px;
+        }
+        input[type="file"], input[type="text"], input[type="password"] {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid #e5e7eb;
+            border-radius: 10px;
+            font-size: 16px;
+            transition: all 0.3s ease;
+            background: #f9fafb;
+        }
+        input:focus {
+            outline: none;
+            border-color: #4f46e5;
+            background: white;
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+        }
+        .file-input-wrapper {
+            position: relative;
+            display: inline-block;
+            width: 100%;
+        }
+        .file-input-wrapper input[type=file] {
+            opacity: 0;
+            position: absolute;
+            z-index: -1;
+        }
+        .file-input-label {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            border: 2px dashed #d1d5db;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: #f9fafb;
+        }
+        .file-input-label:hover {
+            border-color: #4f46e5;
+            background: #f0f4ff;
+        }
+        .file-input-label i {
+            font-size: 2rem;
+            color: #9ca3af;
+            margin-right: 10px;
+        }
+        button {
+            background: linear-gradient(135deg, #4f46e5, #7c3aed);
+            color: white;
+            padding: 15px 30px;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            width: 100%;
+            font-size: 16px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(79, 70, 229, 0.3);
+        }
+        button:disabled {
+            background: #9ca3af;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+        .status {
+            margin: 15px 0;
+            padding: 15px;
+            border-radius: 10px;
+            font-weight: 500;
+            animation: slideIn 0.3s ease;
+        }
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .success {
+            background: linear-gradient(135deg, #d1fae5, #a7f3d0);
+            color: #065f46;
+            border: 1px solid #10b981;
+        }
+        .error {
+            background: linear-gradient(135deg, #fee2e2, #fecaca);
+            color: #991b1b;
+            border: 1px solid #ef4444;
+        }
+        .loading {
+            background: linear-gradient(135deg, #dbeafe, #bfdbfe);
+            color: #1e40af;
+            border: 1px solid #3b82f6;
+        }
+        .qa-section {
+            display: none;
+        }
+        .question-input {
+            display: flex;
+            gap: 15px;
+            align-items: flex-end;
+        }
+        .question-input input {
+            flex: 1;
+        }
+        .question-input button {
+            width: auto;
+            padding: 15px 25px;
+            min-width: 120px;
+        }
+        .answer {
+            background: linear-gradient(135deg, #f0f9ff, #e0f2fe);
+            padding: 25px;
+            border-radius: 15px;
+            margin: 20px 0;
+            white-space: pre-wrap;
+            border-left: 4px solid #0ea5e9;
+            font-size: 16px;
+            line-height: 1.6;
+            animation: fadeIn 0.5s ease;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,.3);
+            border-radius: 50%;
+            border-top-color: #fff;
+            animation: spin 1s ease-in-out infinite;
+            margin-right: 10px;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1><i class="fas fa-file-pdf"></i> PDF OCR with Gemini Q&A</h1>
+            <p>Upload your PDF and ask intelligent questions powered by AI</p>
+        </div>
+        
+        <div class="content">
+            <div class="upload-section">
+                <div class="section-title">
+                    <i class="fas fa-upload"></i>
+                    Step 1: Upload PDF and Enter API Key
+                </div>
+                <form id="uploadForm">
+                    <div class="form-group">
+                        <label for="apiKey"><i class="fas fa-key"></i> Google Gemini API Key:</label>
+                        <input type="password" id="apiKey" name="api_key" placeholder="Enter your Gemini API key" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label><i class="fas fa-file-pdf"></i> Select PDF File:</label>
+                        <div class="file-input-wrapper">
+                            <input type="file" id="pdfFile" name="file" accept=".pdf" required>
+                            <label for="pdfFile" class="file-input-label">
+                                <i class="fas fa-cloud-upload-alt"></i>
+                                <span>Click to upload PDF or drag and drop</span>
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <button type="submit" id="uploadBtn">
+                        <i class="fas fa-cogs"></i> Process PDF
+                    </button>
+                </form>
+                
+                <div id="uploadStatus"></div>
+            </div>
+            
+            <div class="qa-section" id="qaSection">
+                <div class="section-title">
+                    <i class="fas fa-question-circle"></i>
+                    Step 2: Ask Questions
+                </div>
+                <div class="question-input">
+                    <input type="text" id="questionInput" placeholder="Ask a question about the PDF content..." onkeypress="handleKeyPress(event)">
+                    <button onclick="askQuestion()" id="askBtn">
+                        <i class="fas fa-paper-plane"></i> Ask
+                    </button>
+                </div>
+                
+                <div id="qaStatus"></div>
+                <div id="answer"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('uploadForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const formData = new FormData();
+            const fileInput = document.getElementById('pdfFile');
+            const apiKeyInput = document.getElementById('apiKey');
+            
+            if (!fileInput.files[0] || !apiKeyInput.value) {
+                showStatus('uploadStatus', 'Please select a PDF file and enter API key', 'error');
+                return;
+            }
+            
+            formData.append('file', fileInput.files[0]);
+            formData.append('api_key', apiKeyInput.value);
+            
+            const uploadBtn = document.getElementById('uploadBtn');
+            uploadBtn.disabled = true;
+            uploadBtn.innerHTML = '<span class="spinner"></span>Processing...';
+            
+            showStatus('uploadStatus', 'Processing PDF... This may take a few minutes.', 'loading');
+            
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    showStatus('uploadStatus', `Success! Extracted ${result.text_length} characters from PDF.`, 'success');
+                    document.getElementById('qaSection').style.display = 'block';
+                } else {
+                    showStatus('uploadStatus', result.error, 'error');
+                }
+            } catch (error) {
+                showStatus('uploadStatus', 'Upload failed: ' + error.message, 'error');
+            }
+            
+            uploadBtn.disabled = false;
+            uploadBtn.innerHTML = '<i class="fas fa-cogs"></i> Process PDF';
+        });
+        
+        async function askQuestion() {
+            const question = document.getElementById('questionInput').value.trim();
+            if (!question) {
+                showStatus('qaStatus', 'Please enter a question', 'error');
+                return;
+            }
+            
+            const askBtn = document.getElementById('askBtn');
+            askBtn.disabled = true;
+            askBtn.innerHTML = '<span class="spinner"></span>Thinking...';
+            
+            showStatus('qaStatus', 'Generating answer...', 'loading');
+            
+            try {
+                const response = await fetch('/ask', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ question: question })
+                });
+                
+                const result = await response.json();
+                
+                if (result.answer) {
+                    showStatus('qaStatus', 'Answer generated successfully!', 'success');
+                    document.getElementById('answer').innerHTML = `<div class="answer"><i class="fas fa-robot"></i> <strong>AI Answer:</strong><br><br>${result.answer}</div>`;
+                } else {
+                    showStatus('qaStatus', result.error, 'error');
+                }
+            } catch (error) {
+                showStatus('qaStatus', 'Failed to get answer: ' + error.message, 'error');
+            }
+            
+            askBtn.disabled = false;
+            askBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Ask';
+            document.getElementById('questionInput').value = '';
+        }
+        
+        function handleKeyPress(event) {
+            if (event.key === 'Enter') {
+                askQuestion();
+            }
+        }
+        
+        function showStatus(elementId, message, type) {
+            const statusDiv = document.getElementById(elementId);
+            const icons = {
+                success: 'fas fa-check-circle',
+                error: 'fas fa-exclamation-triangle',
+                loading: 'fas fa-spinner fa-spin'
+            };
+            statusDiv.innerHTML = `<div class="status ${type}"><i class="${icons[type]}"></i> ${message}</div>`;
+        }
+        
+        // File input label update
+        document.getElementById('pdfFile').addEventListener('change', function(e) {
+            const label = document.querySelector('.file-input-label span');
+            if (e.target.files.length > 0) {
+                label.textContent = e.target.files[0].name;
+            } else {
+                label.textContent = 'Click to upload PDF or drag and drop';
+            }
+        });
+    </script>
+</body>
+</html>
