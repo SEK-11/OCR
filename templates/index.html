@@ -370,15 +370,26 @@
                     body: formData
                 });
                 
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    const text = await response.text();
+                    throw new Error(`Expected JSON response, got: ${text.substring(0, 100)}`);
+                }
+                
                 const result = await response.json();
                 
                 if (result.success) {
                     showStatus('uploadStatus', `✅ Success! Extracted ${result.text_length} characters from PDF.`, 'success');
                     document.getElementById('qaSection').style.display = 'block';
                 } else {
-                    showStatus('uploadStatus', result.error, 'error');
+                    showStatus('uploadStatus', result.error || 'Unknown error occurred', 'error');
                 }
             } catch (error) {
+                console.error('Upload error:', error);
                 showStatus('uploadStatus', 'Upload failed: ' + error.message, 'error');
             }
             
@@ -406,6 +417,16 @@
                     body: JSON.stringify({ question: question })
                 });
                 
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    const text = await response.text();
+                    throw new Error(`Expected JSON response, got: ${text.substring(0, 100)}`);
+                }
+                
                 const result = await response.json();
                 
                 if (result.answer) {
@@ -416,9 +437,10 @@
                         updateChatHistory();
                     }
                 } else {
-                    showStatus('qaStatus', result.error, 'error');
+                    showStatus('qaStatus', result.error || 'Unknown error occurred', 'error');
                 }
             } catch (error) {
+                console.error('Question error:', error);
                 showStatus('qaStatus', 'Failed to get answer: ' + error.message, 'error');
             }
             

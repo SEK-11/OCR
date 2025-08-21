@@ -61,26 +61,34 @@ DOCUMENT_TEMPLATES = {
 }
 
 def extract_text_from_pdf(pdf_path):
-    print("Initializing OCR...")
-    reader = easyocr.Reader(['en'], gpu=False)
-    pages = convert_from_path(pdf_path)
-    
-    all_text = []
-    for i, img in enumerate(pages):
-        print(f"Processing page {i+1}...")
-        img_array = np.array(img)
-        result = reader.readtext(img_array)
+    try:
+        print("Initializing OCR...")
+        reader = easyocr.Reader(['en'], gpu=False)
         
-        page_text = []
-        for item in result:
-            text = item[1].strip()
-            if len(text) > 1:
-                page_text.append(text)
+        print("Converting PDF to images...")
+        pages = convert_from_path(pdf_path, dpi=200, first_page=1, last_page=10)  # Limit pages for faster processing
         
-        if page_text:
-            all_text.extend(page_text)
-    
-    return "\n".join(all_text)
+        if not pages:
+            raise Exception("Could not convert PDF to images")
+        
+        all_text = []
+        for i, img in enumerate(pages):
+            print(f"Processing page {i+1}/{len(pages)}...")
+            img_array = np.array(img)
+            result = reader.readtext(img_array, detail=0)  # Get text only, no coordinates
+            
+            for text in result:
+                text = text.strip()
+                if len(text) > 1:
+                    all_text.append(text)
+        
+        extracted_text = "\n".join(all_text)
+        print(f"Extraction complete. Total text length: {len(extracted_text)}")
+        return extracted_text
+        
+    except Exception as e:
+        print(f"Text extraction error: {str(e)}")
+        raise Exception(f"Failed to extract text from PDF: {str(e)}")
 
 def setup_gemini_qa(extracted_text, api_key):
     genai.configure(api_key=api_key)
@@ -120,19 +128,22 @@ def index():
 def upload_file():
     global extracted_text, qa_function
     
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file selected'})
-    
-    file = request.files['file']
-    api_key = request.form.get('api_key')
-    
-    if file.filename == '':
-        return jsonify({'error': 'No file selected'})
-    
-    if not api_key:
-        return jsonify({'error': 'API key is required'})
-    
-    if file and file.filename.lower().endswith('.pdf'):
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file selected'}), 400
+        
+        file = request.files['file']
+        api_key = request.form.get('api_key')
+        
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
+        
+        if not api_key:
+            return jsonify({'error': 'API key is required'}), 400
+        
+        if not file.filename.lower().endswith('.pdf'):
+            return jsonify({'error': 'Please upload a PDF file'}), 400
+        
         filename = secure_filename(file.filename)
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
@@ -143,15 +154,12 @@ def upload_file():
             extracted_text = extract_text_from_pdf(filepath)
             
             if len(extracted_text.strip()) < 5:
-                return jsonify({'error': 'Could not extract text from PDF. Please ensure the PDF contains readable text or images.'})
+                return jsonify({'error': 'Could not extract text from PDF. Please ensure the PDF contains readable text or images.'}), 422
             
             print(f"Extracted {len(extracted_text)} characters from PDF")
             
             # Setup QA
             qa_function = setup_gemini_qa(extracted_text, api_key)
-            
-            # Clean up uploaded file
-            os.remove(filepath)
             
             return jsonify({
                 'success': True,
@@ -161,27 +169,38 @@ def upload_file():
             })
             
         except Exception as e:
-            return jsonify({'error': f'Processing failed: {str(e)}'})
+            print(f"Processing error: {str(e)}")
+            return jsonify({'error': f'Processing failed: {str(e)}'}), 500
+        finally:
+            # Always clean up uploaded file
+            if os.path.exists(filepath):
+                os.remove(filepath)
     
-    return jsonify({'error': 'Please upload a PDF file'})
+    except Exception as e:
+        print(f"Upload error: {str(e)}")
+        return jsonify({'error': f'Upload failed: {str(e)}'}), 500
 
 @app.route('/ask', methods=['POST'])
 def ask_question():
     global qa_function, chat_history
     
-    if qa_function is None:
-        return jsonify({'error': 'Please upload and process a PDF first'})
-    
-    question = request.json.get('question')
-    if not question:
-        return jsonify({'error': 'Question is required'})
-    
     try:
-        answer = qa_function(question)
+        if qa_function is None:
+            return jsonify({'error': 'Please upload and process a PDF first'}), 400
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'Invalid JSON data'}), 400
+            
+        question = data.get('question')
+        if not question or not question.strip():
+            return jsonify({'error': 'Question is required'}), 400
+        
+        answer = qa_function(question.strip())
         
         # Add to chat history
         chat_entry = {
-            'question': question,
+            'question': question.strip(),
             'answer': answer,
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
@@ -192,7 +211,8 @@ def ask_question():
             'chat_history': chat_history
         })
     except Exception as e:
-        return jsonify({'error': f'Error generating answer: {str(e)}'})
+        print(f"Question processing error: {str(e)}")
+        return jsonify({'error': f'Error generating answer: {str(e)}'}), 500
 
 @app.route('/templates')
 def get_templates():
