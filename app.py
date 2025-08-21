@@ -12,7 +12,8 @@ from pdf2image import convert_from_path
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB max file size
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 
 # Create upload directory
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -62,20 +63,40 @@ DOCUMENT_TEMPLATES = {
 
 def extract_text_from_pdf(pdf_path):
     try:
-        print("Initializing OCR...")
+        # Try PyMuPDF first (faster for text-based PDFs)
+        doc = fitz.open(pdf_path)
+        text_content = ""
+        
+        # Extract text from first 5 pages only
+        max_pages = min(5, len(doc))
+        for page_num in range(max_pages):
+            page = doc.load_page(page_num)
+            text_content += page.get_text()
+        
+        doc.close()
+        
+        # If we got substantial text, return it
+        if len(text_content.strip()) > 100:
+            print(f"Extracted {len(text_content)} characters using PyMuPDF")
+            return text_content
+        
+        # Fallback to OCR for image-based PDFs (limited processing)
+        print("Text extraction minimal, trying OCR...")
         reader = easyocr.Reader(['en'], gpu=False)
         
-        print("Converting PDF to images...")
-        pages = convert_from_path(pdf_path, dpi=200, first_page=1, last_page=10)  # Limit pages for faster processing
+        # Convert only first 2 pages at lower DPI for speed
+        pages = convert_from_path(pdf_path, dpi=150, first_page=1, last_page=2)
         
         if not pages:
             raise Exception("Could not convert PDF to images")
         
         all_text = []
         for i, img in enumerate(pages):
-            print(f"Processing page {i+1}/{len(pages)}...")
+            print(f"OCR processing page {i+1}/{len(pages)}...")
+            # Resize image for faster processing
+            img = img.resize((img.width//2, img.height//2))
             img_array = np.array(img)
-            result = reader.readtext(img_array, detail=0)  # Get text only, no coordinates
+            result = reader.readtext(img_array, detail=0, width_ths=0.9, height_ths=0.9)
             
             for text in result:
                 text = text.strip()
@@ -83,7 +104,7 @@ def extract_text_from_pdf(pdf_path):
                     all_text.append(text)
         
         extracted_text = "\n".join(all_text)
-        print(f"Extraction complete. Total text length: {len(extracted_text)}")
+        print(f"OCR extraction complete. Total text length: {len(extracted_text)}")
         return extracted_text
         
     except Exception as e:

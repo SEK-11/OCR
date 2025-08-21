@@ -360,15 +360,22 @@
             
             const processBtn = document.getElementById('processBtn');
             processBtn.disabled = true;
-            processBtn.innerHTML = 'Processing...';
+            processBtn.innerHTML = '⏳ Processing...';
             
-            showStatus('uploadStatus', 'Processing PDF... This may take a few minutes.', 'loading');
+            showStatus('uploadStatus', '⏳ Processing PDF... This may take 2-3 minutes for large files.', 'loading');
+            
+            // Set a longer timeout for the request
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 240000); // 4 minutes
             
             try {
                 const response = await fetch('/upload', {
                     method: 'POST',
-                    body: formData
+                    body: formData,
+                    signal: controller.signal
                 });
+                
+                clearTimeout(timeoutId);
                 
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -389,8 +396,13 @@
                     showStatus('uploadStatus', result.error || 'Unknown error occurred', 'error');
                 }
             } catch (error) {
+                clearTimeout(timeoutId);
                 console.error('Upload error:', error);
-                showStatus('uploadStatus', 'Upload failed: ' + error.message, 'error');
+                if (error.name === 'AbortError') {
+                    showStatus('uploadStatus', 'Processing timed out. Please try with a smaller PDF or fewer pages.', 'error');
+                } else {
+                    showStatus('uploadStatus', 'Upload failed: ' + error.message, 'error');
+                }
             }
             
             processBtn.disabled = false;
