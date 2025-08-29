@@ -387,9 +387,8 @@ brew install poppler
 </details>
 
 ### 📞 **Need Help?**
-- 📧 **Email**: support@yourdomain.com
-- 💬 **Discord**: [Join our community](https://discord.gg/your-server)
-- 📖 **Wiki**: [Detailed documentation](https://github.com/yourusername/ai-document-assistant/wiki)
+- 📧 **Email**: shantanuekadam@gmail.com
+
 
 ---
 
@@ -429,7 +428,7 @@ copies of the Software...
 
 <div align="center">
 
-**Made with ❤️ by [Your Name](https://github.com/yourusername)**
+**Made with ❤️ by [Your Name](Shantanu)**
 
 [⬆ Back to Top](#-ai-document-assistant)
 
