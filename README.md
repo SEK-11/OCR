@@ -428,7 +428,7 @@ copies of the Software...
 
 <div align="center">
 
-**Made with ❤️ by [Your Name](Shantanu)**
+**Made with ❤️ by [Shantanu](Shantanu)**
 
 [⬆ Back to Top](#-ai-document-assistant)
 
