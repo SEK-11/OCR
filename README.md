@@ -418,13 +418,6 @@ copies of the Software...
 - **OpenCV** - Computer vision library
 - **PyMuPDF** - PDF processing library
 
----
-
-## ⭐ Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=yourusername/ai-document-assistant&type=Date)](https://star-history.com/#yourusername/ai-document-assistant&Date)
-
----
 
 <div align="center">
 
