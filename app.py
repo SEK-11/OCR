@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, redirect, url_for
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session
 import os
 import easyocr
 import numpy as np
@@ -9,19 +9,41 @@ import time
 import json
 from datetime import datetime
 from pdf2image import convert_from_path
+from docx import Document
+from PIL import Image, ImageEnhance, ImageFilter
+import uuid
+import hashlib
+import cv2
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB max file size
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
+app.secret_key = 'your-secret-key-change-in-production'
+
+# Supported file extensions
+SUPPORTED_EXTENSIONS = {'.pdf', '.docx', '.doc', '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff'}
 
 # Create upload directory
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-# Global variables to store extracted text and QA function
-extracted_text = ""
-qa_function = None
-chat_history = []
+# Global storage for user sessions
+user_sessions = {}
+
+def get_user_id():
+    if 'user_id' not in session:
+        session['user_id'] = str(uuid.uuid4())
+    return session['user_id']
+
+def get_user_session(user_id):
+    if user_id not in user_sessions:
+        user_sessions[user_id] = {
+            'extracted_text': '',
+            'qa_function': None,
+            'chat_history': [],
+            'document_name': ''
+        }
+    return user_sessions[user_id]
 
 # Document templates
 DOCUMENT_TEMPLATES = {
@@ -61,62 +83,134 @@ DOCUMENT_TEMPLATES = {
     ]
 }
 
+def extract_text_from_file(file_path, file_extension):
+    try:
+        if file_extension == '.pdf':
+            return extract_text_from_pdf(file_path)
+        elif file_extension in ['.docx', '.doc']:
+            return extract_text_from_docx(file_path)
+        elif file_extension in ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff']:
+            return extract_text_from_image(file_path)
+        else:
+            raise Exception(f"Unsupported file format: {file_extension}")
+    except Exception as e:
+        print(f"Text extraction error: {str(e)}")
+        raise Exception(f"Failed to extract text: {str(e)}")
+
+def preprocess_image_for_ocr(img):
+    """Simple and effective image preprocessing for OCR"""
+    # Convert PIL to OpenCV format
+    img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+    
+    # Convert to grayscale
+    gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+    
+    # Simple denoising
+    denoised = cv2.fastNlMeansDenoising(gray)
+    
+    # Convert back to PIL format
+    return Image.fromarray(denoised)
+
 def extract_text_from_pdf(pdf_path):
     try:
-        # Try PyMuPDF first (faster for text-based PDFs)
         doc = fitz.open(pdf_path)
         text_content = ""
-        
-        # Extract text from first 5 pages only
         max_pages = min(5, len(doc))
         for page_num in range(max_pages):
             page = doc.load_page(page_num)
             text_content += page.get_text()
-        
         doc.close()
         
-        # If we got substantial text, return it
         if len(text_content.strip()) > 100:
             print(f"Extracted {len(text_content)} characters using PyMuPDF")
             return text_content
         
-        # Fallback to OCR for image-based PDFs (limited processing)
-        print("Text extraction minimal, trying OCR...")
+        # OCR for image-based PDFs
+        print("Using OCR for image-based PDF...")
         reader = easyocr.Reader(['en'], gpu=False)
         
-        # Convert only first 2 pages at lower DPI for speed
-        pages = convert_from_path(pdf_path, dpi=150, first_page=1, last_page=2)
-        
-        if not pages:
-            raise Exception("Could not convert PDF to images")
+        # Convert pages with good quality
+        pages = convert_from_path(pdf_path, dpi=200, first_page=1, last_page=10)
         
         all_text = []
         for i, img in enumerate(pages):
-            print(f"OCR processing page {i+1}/{len(pages)}...")
-            # Resize image for faster processing
-            img = img.resize((img.width//2, img.height//2))
-            img_array = np.array(img)
-            result = reader.readtext(img_array, detail=0, width_ths=0.9, height_ths=0.9)
+            print(f"Processing page {i+1}/{len(pages)} with OCR...")
             
+            # Apply simple preprocessing
+            processed_img = preprocess_image_for_ocr(img)
+            
+            # OCR with standard settings
+            result = reader.readtext(
+                np.array(processed_img), 
+                detail=0,
+                paragraph=True,
+                width_ths=0.7,
+                height_ths=0.7
+            )
+            
+            page_text = []
             for text in result:
-                text = text.strip()
-                if len(text) > 1:
-                    all_text.append(text)
+                cleaned_text = text.strip()
+                if len(cleaned_text) > 1:  # Keep more text
+                    page_text.append(cleaned_text)
+            
+            if page_text:
+                all_text.extend(page_text)
         
         extracted_text = "\n".join(all_text)
-        print(f"OCR extraction complete. Total text length: {len(extracted_text)}")
+        print(f"OCR complete. Extracted {len(extracted_text)} characters")
         return extracted_text
         
     except Exception as e:
-        print(f"Text extraction error: {str(e)}")
-        raise Exception(f"Failed to extract text from PDF: {str(e)}")
+        raise Exception(f"PDF extraction failed: {str(e)}")
+
+def extract_text_from_docx(docx_path):
+    try:
+        doc = Document(docx_path)
+        text_content = "\n".join([paragraph.text for paragraph in doc.paragraphs])
+        print(f"Extracted {len(text_content)} characters from DOCX")
+        return text_content
+    except Exception as e:
+        raise Exception(f"DOCX extraction failed: {str(e)}")
+
+def extract_text_from_image(image_path):
+    try:
+        reader = easyocr.Reader(['en'], gpu=False)
+        img = Image.open(image_path)
+        
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        
+        # Keep original size or resize moderately
+        if img.width > 3000:
+            ratio = 3000 / img.width
+            new_height = int(img.height * ratio)
+            img = img.resize((3000, new_height), Image.LANCZOS)
+        
+        # Apply preprocessing for better OCR
+        processed_img = preprocess_image_for_ocr(img)
+        
+        # OCR with standard settings
+        result = reader.readtext(
+            np.array(processed_img), 
+            detail=0,
+            paragraph=True,
+            width_ths=0.7,
+            height_ths=0.7
+        )
+        
+        text_content = "\n".join([text.strip() for text in result if len(text.strip()) > 1])
+        print(f"Extracted {len(text_content)} characters from image with OCR")
+        return text_content
+    except Exception as e:
+        raise Exception(f"Image extraction failed: {str(e)}")
 
 def setup_gemini_qa(extracted_text, api_key):
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-1.5-flash')
     
     def answer_question(question):
-        prompt = f"""Based on the following extracted text from a PDF document, please answer the question in a clear and well-formatted manner.
+        prompt = f"""Based on the following extracted text from a document, please answer the question in a clear and well-formatted manner.
 
 Document content:
 {extracted_text}
@@ -147,8 +241,6 @@ def index():
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
-    global extracted_text, qa_function
-    
     try:
         if 'file' not in request.files:
             return jsonify({'error': 'No file selected'}), 400
@@ -162,38 +254,45 @@ def upload_file():
         if not api_key:
             return jsonify({'error': 'API key is required'}), 400
         
-        if not file.filename.lower().endswith('.pdf'):
-            return jsonify({'error': 'Please upload a PDF file'}), 400
+        # Check file extension
+        file_extension = os.path.splitext(file.filename.lower())[1]
+        if file_extension not in SUPPORTED_EXTENSIONS:
+            return jsonify({'error': f'Unsupported file format. Supported: {list(SUPPORTED_EXTENSIONS)}'}), 400
         
         filename = secure_filename(file.filename)
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
         
         try:
-            # Extract text
-            print("Starting text extraction...")
-            extracted_text = extract_text_from_pdf(filepath)
+            user_id = get_user_id()
+            user_session = get_user_session(user_id)
+            
+            print(f"Starting text extraction for {file_extension} file...")
+            extracted_text = extract_text_from_file(filepath, file_extension)
             
             if len(extracted_text.strip()) < 5:
-                return jsonify({'error': 'Could not extract text from PDF. Please ensure the PDF contains readable text or images.'}), 422
+                return jsonify({'error': 'Could not extract text from file. Please ensure it contains readable content.'}), 422
             
-            print(f"Extracted {len(extracted_text)} characters from PDF")
+            print(f"Extracted {len(extracted_text)} characters")
             
-            # Setup QA
-            qa_function = setup_gemini_qa(extracted_text, api_key)
+            # Store in user session
+            user_session['extracted_text'] = extracted_text
+            user_session['qa_function'] = setup_gemini_qa(extracted_text, api_key)
+            user_session['document_name'] = filename
+            user_session['chat_history'] = []  # Reset chat history for new document
             
             return jsonify({
                 'success': True,
                 'text_length': len(extracted_text),
-                'preview': extracted_text[:500],
-                'filename': filename
+                'preview': extracted_text[:300],
+                'filename': filename,
+                'file_type': file_extension
             })
             
         except Exception as e:
             print(f"Processing error: {str(e)}")
             return jsonify({'error': f'Processing failed: {str(e)}'}), 500
         finally:
-            # Always clean up uploaded file
             if os.path.exists(filepath):
                 os.remove(filepath)
     
@@ -203,11 +302,12 @@ def upload_file():
 
 @app.route('/ask', methods=['POST'])
 def ask_question():
-    global qa_function, chat_history
-    
     try:
-        if qa_function is None:
-            return jsonify({'error': 'Please upload and process a PDF first'}), 400
+        user_id = get_user_id()
+        user_session = get_user_session(user_id)
+        
+        if user_session['qa_function'] is None:
+            return jsonify({'error': 'Please upload and process a document first'}), 400
         
         data = request.get_json()
         if not data:
@@ -217,19 +317,21 @@ def ask_question():
         if not question or not question.strip():
             return jsonify({'error': 'Question is required'}), 400
         
-        answer = qa_function(question.strip())
+        answer = user_session['qa_function'](question.strip())
         
-        # Add to chat history
         chat_entry = {
+            'id': str(uuid.uuid4()),
             'question': question.strip(),
             'answer': answer,
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            'timestamp': datetime.now().isoformat()
         }
-        chat_history.append(chat_entry)
+        user_session['chat_history'].append(chat_entry)
         
         return jsonify({
+            'success': True,
             'answer': answer,
-            'chat_history': chat_history
+            'message': chat_entry,
+            'chat_history': user_session['chat_history']
         })
     except Exception as e:
         print(f"Question processing error: {str(e)}")
@@ -241,12 +343,24 @@ def get_templates():
 
 @app.route('/chat-history')
 def get_chat_history():
-    return jsonify(chat_history)
+    user_id = get_user_id()
+    user_session = get_user_session(user_id)
+    return jsonify({
+        'chat_history': user_session['chat_history'],
+        'document_name': user_session['document_name']
+    })
+
+@app.route('/history')
+def get_history():
+    user_id = get_user_id()
+    user_session = get_user_session(user_id)
+    return jsonify(user_session['chat_history'])
 
 @app.route('/clear-history', methods=['POST'])
 def clear_chat_history():
-    global chat_history
-    chat_history = []
+    user_id = get_user_id()
+    user_session = get_user_session(user_id)
+    user_session['chat_history'] = []
     return jsonify({'success': True})
 
 if __name__ == '__main__':
