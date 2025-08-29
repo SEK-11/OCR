@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session, Response
 import os
 import easyocr
 import numpy as np
@@ -17,7 +17,7 @@ import cv2
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB max file size
+app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # 20MB max file size
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 app.secret_key = 'your-secret-key-change-in-production'
 
@@ -98,18 +98,22 @@ def extract_text_from_file(file_path, file_extension):
         raise Exception(f"Failed to extract text: {str(e)}")
 
 def preprocess_image_for_ocr(img):
-    """Simple and effective image preprocessing for OCR"""
-    # Convert PIL to OpenCV format
-    img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-    
-    # Convert to grayscale
-    gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
-    
-    # Simple denoising
-    denoised = cv2.fastNlMeansDenoising(gray)
-    
-    # Convert back to PIL format
-    return Image.fromarray(denoised)
+    """Memory-efficient image preprocessing for OCR"""
+    try:
+        # Convert PIL to OpenCV format
+        img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+        
+        # Convert to grayscale
+        gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+        
+        # Always apply denoising but with memory-efficient parameters
+        denoised = cv2.fastNlMeansDenoising(gray, h=10, templateWindowSize=7, searchWindowSize=21)
+        
+        # Convert back to PIL format
+        return Image.fromarray(denoised)
+    except Exception as e:
+        print(f"Preprocessing failed, using original: {e}")
+        return img
 
 def extract_text_from_pdf(pdf_path):
     try:
@@ -127,35 +131,89 @@ def extract_text_from_pdf(pdf_path):
         
         # OCR for image-based PDFs
         print("Using OCR for image-based PDF...")
-        reader = easyocr.Reader(['en'], gpu=False)
         
-        # Convert pages with good quality
-        pages = convert_from_path(pdf_path, dpi=200, first_page=1, last_page=10)
+        try:
+            reader = easyocr.Reader(['en'], gpu=False)
+        except Exception as e:
+            raise Exception(f"Failed to initialize OCR reader: {str(e)}")
         
-        all_text = []
-        for i, img in enumerate(pages):
-            print(f"Processing page {i+1}/{len(pages)} with OCR...")
+        # Process pages in batches to manage memory
+        import gc
+        
+        try:
+            # Get total pages first
+            doc_info = fitz.open(pdf_path)
+            total_pages = min(len(doc_info), 10)  # Process up to 10 pages
+            doc_info.close()
             
-            # Apply simple preprocessing
-            processed_img = preprocess_image_for_ocr(img)
+            all_text = []
+            batch_size = 2  # Process 2 pages at a time
             
-            # OCR with standard settings
-            result = reader.readtext(
-                np.array(processed_img), 
-                detail=0,
-                paragraph=True,
-                width_ths=0.7,
-                height_ths=0.7
-            )
-            
-            page_text = []
-            for text in result:
-                cleaned_text = text.strip()
-                if len(cleaned_text) > 1:  # Keep more text
-                    page_text.append(cleaned_text)
-            
-            if page_text:
-                all_text.extend(page_text)
+            for batch_start in range(0, total_pages, batch_size):
+                batch_end = min(batch_start + batch_size, total_pages)
+                
+                try:
+                    # Convert batch of pages with high quality
+                    pages = convert_from_path(
+                        pdf_path, 
+                        dpi=250,  # High quality
+                        first_page=batch_start + 1, 
+                        last_page=batch_end
+                    )
+                    
+                    for i, img in enumerate(pages):
+                        page_num = batch_start + i + 1
+                        print(f"Processing page {page_num}/{total_pages} with high-quality OCR...")
+                        
+                        try:
+                            # Keep high resolution but manage memory
+                            max_dimension = 4000  # Allow larger images
+                            if img.width > max_dimension or img.height > max_dimension:
+                                ratio = min(max_dimension/img.width, max_dimension/img.height)
+                                new_width = int(img.width * ratio)
+                                new_height = int(img.height * ratio)
+                                img = img.resize((new_width, new_height), Image.LANCZOS)
+                            
+                            # Apply preprocessing
+                            processed_img = preprocess_image_for_ocr(img)
+                            
+                            # High-quality OCR settings
+                            result = reader.readtext(
+                                np.array(processed_img), 
+                                detail=0,
+                                paragraph=True,
+                                width_ths=0.7,
+                                height_ths=0.7,
+                                decoder='beamsearch'  # Better accuracy
+                            )
+                            
+                            page_text = []
+                            for text in result:
+                                cleaned_text = text.strip()
+                                if len(cleaned_text) > 1:
+                                    page_text.append(cleaned_text)
+                            
+                            if page_text:
+                                all_text.extend(page_text)
+                                
+                            # Clear memory after each page
+                            del img, processed_img, result
+                            gc.collect()
+                            
+                        except Exception as e:
+                            print(f"Error processing page {page_num}: {str(e)}")
+                            continue
+                    
+                    # Clear batch memory
+                    del pages
+                    gc.collect()
+                    
+                except Exception as e:
+                    print(f"Error processing batch {batch_start+1}-{batch_end}: {str(e)}")
+                    continue
+                    
+        except Exception as e:
+            raise Exception(f"Failed to process PDF: {str(e)}")
         
         extracted_text = "\n".join(all_text)
         print(f"OCR complete. Extracted {len(extracted_text)} characters")
@@ -181,23 +239,33 @@ def extract_text_from_image(image_path):
         if img.mode != 'RGB':
             img = img.convert('RGB')
         
-        # Keep original size or resize moderately
-        if img.width > 3000:
-            ratio = 3000 / img.width
+        # Keep high resolution for better OCR
+        max_dimension = 3500  # Higher resolution allowed
+        if img.width > max_dimension or img.height > max_dimension:
+            ratio = min(max_dimension/img.width, max_dimension/img.height)
+            new_width = int(img.width * ratio)
             new_height = int(img.height * ratio)
-            img = img.resize((3000, new_height), Image.LANCZOS)
+            img = img.resize((new_width, new_height), Image.LANCZOS)
         
-        # Apply preprocessing for better OCR
-        processed_img = preprocess_image_for_ocr(img)
-        
-        # OCR with standard settings
-        result = reader.readtext(
-            np.array(processed_img), 
-            detail=0,
-            paragraph=True,
-            width_ths=0.7,
-            height_ths=0.7
-        )
+        try:
+            # Apply preprocessing for better OCR
+            processed_img = preprocess_image_for_ocr(img)
+            
+            # OCR with standard settings
+            result = reader.readtext(
+                np.array(processed_img), 
+                detail=0,
+                paragraph=True,
+                width_ths=0.7,
+                height_ths=0.7
+            )
+        except Exception as e:
+            print(f"OCR processing failed: {str(e)}")
+            # Fallback to simple OCR without preprocessing
+            result = reader.readtext(
+                np.array(img), 
+                detail=0
+            )
         
         text_content = "\n".join([text.strip() for text in result if len(text.strip()) > 1])
         print(f"Extracted {len(text_content)} characters from image with OCR")
@@ -268,7 +336,20 @@ def upload_file():
             user_session = get_user_session(user_id)
             
             print(f"Starting text extraction for {file_extension} file...")
-            extracted_text = extract_text_from_file(filepath, file_extension)
+            
+            # Add timeout protection with longer time for quality processing
+            import signal
+            
+            def timeout_handler(signum, frame):
+                raise TimeoutError("Processing timeout - file too complex")
+            
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(300)  # 5 minute timeout for quality processing
+            
+            try:
+                extracted_text = extract_text_from_file(filepath, file_extension)
+            finally:
+                signal.alarm(0)  # Cancel timeout
             
             if len(extracted_text.strip()) < 5:
                 return jsonify({'error': 'Could not extract text from file. Please ensure it contains readable content.'}), 422
@@ -280,6 +361,10 @@ def upload_file():
             user_session['qa_function'] = setup_gemini_qa(extracted_text, api_key)
             user_session['document_name'] = filename
             user_session['chat_history'] = []  # Reset chat history for new document
+            
+            # Force garbage collection after processing
+            import gc
+            gc.collect()
             
             return jsonify({
                 'success': True,
